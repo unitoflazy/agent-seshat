@@ -137,9 +137,17 @@ class Settings:
         return self
 
 
+def user_home_dir() -> Path:
+    """Resolve the effective user home directory (supports `AGENT_SESHAT_HOST_HOME` inside Docker)."""
+    raw = os.environ.get("AGENT_SESHAT_HOST_HOME")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return Path.home().resolve()
+
+
 def seshat_home() -> Path:
     raw = os.environ.get("AGENT_SESHAT_HOME")
-    return Path(raw).expanduser().resolve() if raw else (Path.home() / ".agent-seshat")
+    return Path(raw).expanduser().resolve() if raw else (user_home_dir() / ".agent-seshat")
 
 
 def get_settings() -> Settings:

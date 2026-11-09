@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# sesh / agent-seshat — Zero-Host-Dependency Docker CLI Launcher
+#
+# Runs Agent-Seshat CLI commands & MCP stdio streams directly against the warm
+# `agent-seshat` Docker container while preserving host working directories,
+# host $HOME paths, and agent configuration files (~/.claude, ~/.cursor, etc.).
+# ==============================================================================
+set -euo pipefail
+export DOCKER_CLI_HINTS=false
+
+CONTAINER_NAME="${AGENT_SESHAT_CONTAINER:-agent-seshat}"
+PORT="${AGENT_SESHAT_PORT:-8765}"
+
+# Resolve repository root (supports symlinks in ~/.local/bin or /opt/homebrew/bin)
+resolve_repo_dir() {
+    if [ -n "${AGENT_SESHAT_REPO_DIR:-}" ] && [ -f "${AGENT_SESHAT_REPO_DIR}/docker-compose.yml" ]; then
+        echo "${AGENT_SESHAT_REPO_DIR}"
+        return
+    fi
+    local src="${BASH_SOURCE[0]}"
+    while [ -h "$src" ]; do
+        local dir
+        dir="$(cd -P "$(dirname "$src")" && pwd)"
+        src="$(readlink "$src")"
+        [[ $src != /* ]] && src="$dir/$src"
+    done
+    local bin_dir
+    bin_dir="$(cd -P "$(dirname "$src")" && pwd)"
+    local repo_dir
+    repo_dir="$(cd -P "$bin_dir/.." && pwd)"
+    echo "$repo_dir"
+}
+
+REPO_DIR="$(resolve_repo_dir)"
+COMPOSE_FILE="${REPO_DIR}/docker-compose.yml"
+
+# Handle `sesh daemon ...` directly on the host so `sesh daemon up` works when stopped
+if [ "${1:-}" = "daemon" ]; then
+    shift
+    SUBCMD="${1:-status}"
+    shift || true
+    case "$SUBCMD" in
+        up)
+            docker compose -f "$COMPOSE_FILE" up -d "$@"
+            echo "Agent-Seshat Docker daemon is running at http://127.0.0.1:${PORT}"
+            exit 0
+            ;;
+        down|stop)
+            docker compose -f "$COMPOSE_FILE" down "$@"
+            echo "Agent-Seshat Docker daemon stopped."
+            exit 0
+            ;;
+        restart)
+            docker compose -f "$COMPOSE_FILE" restart "$@"
+            echo "Agent-Seshat Docker daemon restarted."
+            exit 0
+            ;;
+        logs)
+            exec docker compose -f "$COMPOSE_FILE" logs "$@"
+            ;;
+        build)
+            exec docker compose -f "$COMPOSE_FILE" build "$@"
+            ;;
+        status|ps)
+            docker compose -f "$COMPOSE_FILE" ps
+            if curl -fsS "http://127.0.0.1:${PORT}/health" 2>/dev/null; then
+                echo ""
+            else
+                echo "Daemon is offline at http://127.0.0.1:${PORT}/health"
+            fi
+            exit 0
+            ;;
+        -h|--help|help)
+            echo "Usage: sesh daemon [up|down|restart|logs|status|build]"
+            echo ""
+            echo "Commands:"
+            echo "  up [--build]   Start the warm Agent-Seshat Docker daemon"
+            echo "  down           Stop and remove the Docker daemon container"
+            echo "  restart        Restart the Docker daemon container"
+            echo "  logs [-f]      View container logs"
+            echo "  status         Show container status and /health response"
+            echo "  build          Rebuild the Docker image"
+            exit 0
+            ;;
+        *)
+            echo "Unknown daemon command: $SUBCMD (expected: up, down, restart, logs, status, build)" >&2
+            exit 2
+            ;;
+    esac
+fi
+
+# Ensure Docker container is running (auto-start if stopped)
+ensure_container_running() {
+    local running
+    running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || echo "missing")"
+    if [ "$running" = "true" ]; then
+        return 0
+    fi
+    if [ "$running" = "false" ]; then
+        docker start "$CONTAINER_NAME" >/dev/null
+    elif [ -f "$COMPOSE_FILE" ]; then
+        docker compose -f "$COMPOSE_FILE" up -d >/dev/null
+    else
+        echo "Error: Container '$CONTAINER_NAME' is not running and docker-compose.yml was not found." >&2
+        exit 1
+    fi
+    # Wait up to 3s for daemon health
+    for _ in $(seq 1 15); do
+        if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+            break
+        fi
+        sleep 0.2
+    done
+}
+
+ensure_container_running
+
+# Preserve caller's working directory if it sits under $HOME (mounted into container)
+CURRENT_DIR="$(pwd -P)"
+WORK_DIR="/app"
+if [[ "$CURRENT_DIR" == "$HOME"* ]]; then
+    WORK_DIR="$CURRENT_DIR"
+fi
+
+# Use -i without -t for `mcp` (JSON-RPC stdio), `--raw`, `export`, or non-TTY pipes
+DOCKER_FLAGS="-i"
+if [ -t 0 ] && [ -t 1 ] && [ "${1:-}" != "mcp" ]; then
+    USE_TTY=1
+    for arg in "$@"; do
+        if [ "$arg" = "--raw" ] || [ "$arg" = "-r" ] || [ "$arg" = "export" ]; then
+            USE_TTY=0
+            break
+        fi
+    done
+    if [ "$USE_TTY" -eq 1 ]; then
+        DOCKER_FLAGS="-it"
+    fi
+fi
+
+exec docker exec $DOCKER_FLAGS \
+    -w "$WORK_DIR" \
+    -e HOME="$HOME" \
+    -e AGENT_SESHAT_HOST_HOME="$HOME" \
+    -e AGENT_SESHAT_HOME="${AGENT_SESHAT_HOME:-$HOME/.agent-seshat}" \
+    -e AGENT_SESHAT_HOST="127.0.0.1" \
+    -e AGENT_SESHAT_PORT="$PORT" \
+    -e TERM="${TERM:-xterm-256color}" \
+    "$CONTAINER_NAME" /opt/venv/bin/sesh "$@"

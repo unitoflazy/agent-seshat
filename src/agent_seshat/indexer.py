@@ -559,22 +559,40 @@ class SkillIndex:
             self._vector_cache = (key, cache)
             return cache
 
-    @staticmethod
-    def _record(row: sqlite3.Row) -> SkillRecord:
+    def _resolve_portable_path(self, raw_path: str, slug: str) -> Path:
+        """Translate `/data/.agent-seshat/skills/...` <-> `~/.agent-seshat/skills/...` when sharing DB with Docker."""
+        p = Path(raw_path)
+        if p.exists():
+            return p
+        parts = p.parts
+        if "skills" in parts:
+            idx = len(parts) - 1 - list(reversed(parts)).index("skills")
+            candidate = self.settings.skills_dir.joinpath(*parts[idx + 1 :])
+            if candidate.exists():
+                return candidate
+        fallback = self.settings.skills_dir / slug / SKILL_FILENAME
+        return fallback if fallback.exists() else p
+
+    def _record(self, row: sqlite3.Row) -> SkillRecord:
         keys = row.keys()
+        slug = row["slug"]
+        resolved_file = self._resolve_portable_path(row["file_path"], slug)
+        raw_origin = row["origin_path"] if "origin_path" in keys and row["origin_path"] else ""
+        if raw_origin and not Path(raw_origin).exists() and "skills" in Path(raw_origin).parts:
+            raw_origin = str(self._resolve_portable_path(raw_origin, slug))
         return SkillRecord(
-            slug=row["slug"],
+            slug=slug,
             name=row["name"],
             description=row["description"],
             tags=[t for t in row["tags"].split(",") if t],
             scope=row["scope"],
             body=row["body"],
-            file_path=Path(row["file_path"]),
+            file_path=resolved_file,
             resources=json.loads(row["resources_json"]),
             content_hash=row["content_hash"],
             mtime=row["mtime"],
             source_agent=row["source_agent"] if "source_agent" in keys and row["source_agent"] else "custom",
-            origin_path=row["origin_path"] if "origin_path" in keys and row["origin_path"] else "",
+            origin_path=raw_origin,
             file_globs=row["file_globs"] if "file_globs" in keys and row["file_globs"] else "",
             pinned=int(row["pinned"]) if "pinned" in keys and row["pinned"] is not None else 0,
             pinned_scope=row["pinned_scope"] if "pinned_scope" in keys and row["pinned_scope"] else "none",

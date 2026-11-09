@@ -22,8 +22,8 @@ from typing import Any
 
 import tomlkit
 
-from .config import DEFAULT_HOST, DEFAULT_PORT, SERVER_NAME, Settings, get_settings
-from .connector import _claude_desktop_path, build_server_entry
+from .config import DEFAULT_HOST, DEFAULT_PORT, SERVER_NAME, Settings, get_settings, user_home_dir
+from .connector import _claude_desktop_path, _is_macos_home, build_server_entry
 from .indexer import SkillIndex
 
 log = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ def is_self_server(name: str, raw_cfg: dict[str, Any]) -> bool:
 
 
 def _vscode_settings_path(home: Path) -> Path:
-    if sys.platform == "darwin":
+    if _is_macos_home(home):
         return home / "Library" / "Application Support" / "Code" / "User" / "settings.json"
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA")
@@ -122,7 +122,7 @@ def _candidate_mcp_config_sources(
     extra_paths: list[Path] | None = None,
 ) -> list[tuple[str, Path, str]]:
     """Return `(source_agent, file_path, fmt)` tuples for MCP config discovery."""
-    home = (user_home or Path.home()).expanduser().resolve()
+    home = (user_home or user_home_dir()).expanduser().resolve()
     ws = (workspace or Path.cwd()).expanduser().resolve()
 
     sources: list[tuple[str, Path, str]] = [

@@ -20,7 +20,7 @@ from typing import Any
 
 import yaml
 
-from .config import IGNORED_DIRS, Settings, get_settings
+from .config import IGNORED_DIRS, Settings, get_settings, user_home_dir
 from .harvester import MAX_COMPANION_BYTES, MAX_FILE_BYTES, STUB_MARKER, _copy_companions, render_skill
 from .indexer import SkillIndex, SkillRecord
 from .parser import (
@@ -124,7 +124,7 @@ def _looks_like_home_dir(directory: Path, user_home: Path) -> bool:
 
 def classify_rule_file(path: Path, user_home: Path | None = None) -> tuple[str, str, Path | None, str] | None:
     """Classify `path` into `(source_agent, rule_kind, workspace_root, scope)` or `None`."""
-    user_home = (user_home or Path.home()).expanduser().resolve()
+    user_home = (user_home or user_home_dir()).expanduser().resolve()
     name = path.name
     parts = path.parts
     parent_name = path.parent.name
@@ -314,7 +314,7 @@ def _fast_walk(root: Path, out: list[Path], library_dir: Path) -> None:
 
 
 def default_deep_scan_roots(user_home: Path | None = None) -> list[Path]:
-    home = (user_home or Path.home()).expanduser().resolve()
+    home = (user_home or user_home_dir()).expanduser().resolve()
     roots: list[Path] = [Path.cwd().resolve()]
     for candidate in (
         home / ".claude",

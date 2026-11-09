@@ -18,7 +18,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from . import __version__
-from .config import SERVER_NAME, Settings, get_settings
+from .config import SERVER_NAME, Settings, get_settings, user_home_dir
 from .env_store import EnvStore
 from .gatekeeper import activate_rules as gk_activate_rules
 from .gatekeeper import propose_session_rules as gk_propose_session_rules
@@ -64,7 +64,7 @@ def detect_project(cwd: Path | None = None) -> str:
         root = find_git_root((cwd or Path.cwd()).resolve())
     except OSError:
         return ""
-    if root is None or root == Path.home().resolve():
+    if root is None or root == user_home_dir():
         return ""
     return root.name
 
@@ -569,6 +569,22 @@ def build_server(
     @mcp.custom_route("/health", methods=["GET"])
     async def health(_: Request) -> JSONResponse:
         return JSONResponse(await anyio.to_thread.run_sync(service.health))
+
+    @mcp.custom_route("/search", methods=["GET"])
+    async def http_search(request: Request) -> JSONResponse:
+        q = request.query_params.get("q", "")
+        proj = request.query_params.get("project", "")
+        top_k = int(request.query_params.get("top_k", "5") or 5)
+
+        def _do_search() -> dict[str, Any]:
+            hits = service.searcher.search(q, project=proj, top_k=top_k)
+            diag = service.searcher.last_diagnostics
+            return {
+                "results": [h.to_dict() for h in hits],
+                "elapsed_ms": diag.elapsed_ms if diag else 0.0,
+            }
+
+        return JSONResponse(await anyio.to_thread.run_sync(_do_search))
 
     mcp._seshat_service = service  # type: ignore[attr-defined]
     return mcp

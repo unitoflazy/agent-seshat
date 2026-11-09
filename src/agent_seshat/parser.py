@@ -11,7 +11,7 @@ from typing import Any
 
 import yaml
 
-from .config import CHUNK_MAX_WORDS, CHUNK_TARGET_MIN_WORDS
+from .config import CHUNK_MAX_WORDS, CHUNK_TARGET_MIN_WORDS, user_home_dir
 
 SKILL_FILENAME = "SKILL.md"
 REDACTED = "[REDACTED_SECRET]"
@@ -242,7 +242,7 @@ def infer_source_agent(path: Path, meta: dict[str, Any] | None = None) -> str:
 def infer_scope(path: Path) -> str:
     """``global`` for files in user-level agent dirs, else ``project:<git-repo-name>``."""
     path = path.expanduser().resolve()
-    home = Path.home().resolve()
+    home = user_home_dir()
     for d in _GLOBAL_AGENT_DIRS:
         try:
             if path.is_relative_to(home / d):

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Wrapper alias for `sesh`
+set -euo pipefail
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "${SCRIPT_DIR}/sesh" "$@"

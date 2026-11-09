@@ -8,10 +8,13 @@ services:
     ports:
       - "127.0.0.1:8765:8765"
     environment:
-      AGENT_SESHAT_HOME: /data/.agent-seshat
+      AGENT_SESHAT_HOME: ${HOME}/.agent-seshat
+      AGENT_SESHAT_HOST_HOME: ${HOME}
       FASTEMBED_CACHE_PATH: /opt/fastembed_cache
     volumes:
       - ~/.agent-seshat:/data/.agent-seshat
+      - ${HOME}:${HOME}
+      - ./src/agent_seshat:/opt/venv/lib/python3.12/site-packages/agent_seshat:ro
     restart: unless-stopped
     healthcheck:
       test:

@@ -54,9 +54,15 @@ env_app = typer.Typer(
     help="Store, retrieve, import, and export scoped environment variables (`global`, `project:<repo>`, `mcp:<server>`).",
     no_args_is_help=True,
 )
+daemon_app = typer.Typer(
+    name="daemon",
+    help="Manage the Agent-Seshat Docker background daemon (`up`, `down`, `restart`, `logs`, `status`, `build`).",
+    no_args_is_help=True,
+)
 app.add_typer(rules_app, name="rules")
 app.add_typer(mcp_hub_app, name="mcp-hub")
 app.add_typer(env_app, name="env")
+app.add_typer(daemon_app, name="daemon")
 
 console = Console()
 
@@ -69,8 +75,9 @@ def _format_bytes(num_bytes: int) -> str:
     return f"{num_bytes / (1024 * 1024):.2f} MB"
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def _main(
+    ctx: typer.Context,
     version: Annotated[
         Optional[bool],
         typer.Option("--version", "-v", help="Show version and exit.", is_eager=True),
@@ -78,6 +85,9 @@ def _main(
 ) -> None:
     if version:
         console.print(f"agent-seshat {__version__}")
+        raise typer.Exit()
+    if ctx.invoked_subcommand is None:
+        console.print(ctx.get_help())
         raise typer.Exit()
 
 
@@ -175,14 +185,59 @@ def search_cmd(
         int,
         typer.Option("--top-k", "-k", help="Maximum number of skills to return."),
     ] = 5,
+    local: Annotated[
+        bool,
+        typer.Option("--local", help="Force local in-process ONNX search instead of using warm HTTP daemon."),
+    ] = False,
 ) -> None:
     """Run a hybrid search (ONNX Cosine + FTS5 BM25 + Exact Boost + RRF) and display diagnostics."""
+    import httpx
+    from .search import SearchResult
+
     settings = get_settings()
-    idx = SkillIndex(settings)
-    searcher = HybridSearcher(idx)
     effective_project = project or detect_project()
-    results = searcher.search(query, project=effective_project, top_k=top_k)
-    diag = searcher.last_diagnostics
+    results: list[SearchResult] | None = None
+    elapsed_ms = 0.0
+    via_daemon = False
+
+    if not local:
+        try:
+            resp = httpx.get(
+                f"{settings.daemon_url}/search",
+                params={"q": query, "project": effective_project, "top_k": top_k},
+                timeout=1.5,
+            )
+            if resp.status_code == 200:
+                payload = resp.json()
+                elapsed_ms = float(payload.get("elapsed_ms", 0.0))
+                via_daemon = True
+                results = [
+                    SearchResult(
+                        slug=item["slug"],
+                        name=item["name"],
+                        description=item["description"],
+                        tags=item["tags"],
+                        scope=item["scope"],
+                        matched_heading=item["matched_heading"],
+                        score=item["score"],
+                        resources=item.get("resources", []),
+                        cosine=item.get("cosine"),
+                        bm25=item.get("bm25"),
+                        semantic_rank=item.get("semantic_rank"),
+                        lexical_rank=item.get("lexical_rank"),
+                        exact_boost=item.get("exact_boost", 0.0),
+                        scope_multiplier=item.get("scope_multiplier", 1.0),
+                    )
+                    for item in payload.get("results", [])
+                ]
+        except Exception:
+            results = None
+
+    if results is None:
+        idx = SkillIndex(settings)
+        searcher = HybridSearcher(idx)
+        results = searcher.search(query, project=effective_project, top_k=top_k)
+        elapsed_ms = searcher.last_diagnostics.elapsed_ms if searcher.last_diagnostics else 0.0
 
     if not results:
         console.print(
@@ -194,9 +249,9 @@ def search_cmd(
         )
         return
 
-    subtitle = f"project={effective_project or 'global'}"
-    if diag:
-        subtitle += f" | latency={diag.elapsed_ms:.1f}ms"
+    subtitle = f"project={effective_project or 'global'} | latency={elapsed_ms:.1f}ms"
+    if via_daemon:
+        subtitle += " | warm-daemon"
     table = Table(
         title=f"Hybrid Search Results for {query!r} ({subtitle})",
         border_style="cyan",
@@ -226,6 +281,27 @@ def search_cmd(
             ", ".join(r.tags[:6]),
         )
     console.print(table)
+
+
+@app.command("show")
+@rules_app.command("show")
+def show_cmd(
+    slug: Annotated[str, typer.Argument(help="Skill or rule slug to load in full.")],
+    resource: Annotated[
+        Optional[str],
+        typer.Option("--resource", "-r", help="Optional companion file inside the skill directory to print."),
+    ] = None,
+) -> None:
+    """Print the full Markdown instructions of a skill/rule (or a companion resource file) in the terminal."""
+    from .server import SeshatService, SkillNotFoundError, SkillSecurityError
+
+    service = SeshatService(SkillIndex(get_settings()))
+    try:
+        output = service.load_skill_resource(slug, resource) if resource else service.load_skill(slug)
+    except (SkillNotFoundError, SkillSecurityError, FileNotFoundError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    typer.echo(output)
 
 
 @app.command("harvest")
@@ -333,11 +409,19 @@ def connect_cmd(
             help="Inject the 6-line Mandatory Pre-Flight Gatekeeper stub into agent instruction files.",
         ),
     ] = False,
+    all_targets: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Connect all supported coding agents (alias for --target all).",
+        ),
+    ] = False,
 ) -> None:
     """Safely back up (*.seshat.bak) and wire coding agents to Agent-Seshat."""
+    effective_target = "all" if all_targets else target
     try:
         results = connect_agents(
-            target=target,
+            target=effective_target,
             mode=mode,
             dry_run=dry_run,
             workspace=Path.cwd(),
@@ -961,3 +1045,97 @@ def env_export_cmd(
         console.print(f"[green]Exported `.env` to `{out_path}`.[/green]")
     else:
         typer.echo(content, nl=False)
+
+
+# ---------------------------------------------------------------------------
+# v2.0: Docker Daemon Lifecycle (`sesh daemon ...`)
+# ---------------------------------------------------------------------------
+
+
+def _find_repo_dir() -> Path:
+    import os
+
+    env_repo = os.environ.get("AGENT_SESHAT_REPO_DIR")
+    if env_repo and (Path(env_repo) / "docker-compose.yml").is_file():
+        return Path(env_repo).resolve()
+    here = Path(__file__).resolve().parent.parent.parent
+    if (here / "docker-compose.yml").is_file():
+        return here
+    return Path.cwd().resolve()
+
+
+def _run_compose(args: list[str]) -> int:
+    import subprocess
+
+    repo_dir = _find_repo_dir()
+    return subprocess.call(["docker", "compose", *args], cwd=str(repo_dir))
+
+
+@daemon_app.command("up")
+def daemon_up_cmd(
+    build: Annotated[
+        bool,
+        typer.Option("--build", "-b", help="Rebuild the Docker image before starting."),
+    ] = False,
+) -> None:
+    """Start the Agent-Seshat warm Docker daemon (`docker compose up -d`)."""
+    cmd = ["up", "-d"] + (["--build"] if build else [])
+    rc = _run_compose(cmd)
+    if rc != 0:
+        raise typer.Exit(code=rc)
+    console.print("[bold green]Agent-Seshat Docker daemon is running on http://127.0.0.1:8765[/bold green]")
+
+
+@daemon_app.command("down")
+def daemon_down_cmd() -> None:
+    """Stop the Agent-Seshat Docker daemon (`docker compose down`)."""
+    rc = _run_compose(["down"])
+    if rc != 0:
+        raise typer.Exit(code=rc)
+    console.print("[yellow]Agent-Seshat Docker daemon stopped.[/yellow]")
+
+
+@daemon_app.command("restart")
+def daemon_restart_cmd() -> None:
+    """Restart the Agent-Seshat Docker daemon (`docker compose restart`)."""
+    rc = _run_compose(["restart"])
+    if rc != 0:
+        raise typer.Exit(code=rc)
+    console.print("[green]Agent-Seshat Docker daemon restarted.[/green]")
+
+
+@daemon_app.command("logs")
+def daemon_logs_cmd(
+    follow: Annotated[
+        bool,
+        typer.Option("--follow", "-f", help="Follow live log output."),
+    ] = False,
+    tail: Annotated[
+        int,
+        typer.Option("--tail", "-n", help="Number of lines to show from the end of the logs."),
+    ] = 50,
+) -> None:
+    """View logs from the Agent-Seshat Docker daemon."""
+    cmd = ["logs", f"--tail={tail}"] + (["-f"] if follow else [])
+    raise typer.Exit(code=_run_compose(cmd))
+
+
+@daemon_app.command("status")
+def daemon_status_cmd() -> None:
+    """Check the Docker container status and `/health` endpoint."""
+    settings = get_settings()
+    health = daemon_health(settings.daemon_url)
+    _run_compose(["ps"])
+    if health:
+        console.print(
+            f"[bold green]Health OK:[/bold green] {health.get('skills', 0)} skills, "
+            f"{health.get('chunks', 0)} chunks, model_loaded={health.get('model_loaded')}"
+        )
+    else:
+        console.print(f"[yellow]Daemon is not responding at {settings.daemon_url}/health[/yellow]")
+
+
+@daemon_app.command("build")
+def daemon_build_cmd() -> None:
+    """Build or rebuild the Agent-Seshat Docker image."""
+    raise typer.Exit(code=_run_compose(["build"]))

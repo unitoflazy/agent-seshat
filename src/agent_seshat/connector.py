@@ -21,7 +21,7 @@ from typing import Any
 
 import tomlkit
 
-from .config import DEFAULT_HOST, DEFAULT_PORT, SERVER_NAME, Settings, get_settings
+from .config import DEFAULT_HOST, DEFAULT_PORT, SERVER_NAME, Settings, get_settings, user_home_dir
 from .gatekeeper import GATEKEEPER_END, GATEKEEPER_PROTOCOL_BLOCK, GATEKEEPER_START
 from .parser import strip_gatekeeper_block
 
@@ -50,8 +50,12 @@ class ConnectResult:
     note: str = ""
 
 
+def _is_macos_home(home: Path) -> bool:
+    return sys.platform == "darwin" or str(home).startswith("/Users/") or (home / "Library").is_dir()
+
+
 def _claude_desktop_path(home: Path) -> Path:
-    if sys.platform == "darwin":
+    if _is_macos_home(home):
         return home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA")
@@ -61,7 +65,7 @@ def _claude_desktop_path(home: Path) -> Path:
 
 
 def get_target_specs(user_home: Path | None = None) -> list[TargetSpec]:
-    home = (user_home or Path.home()).expanduser().resolve()
+    home = (user_home or user_home_dir()).expanduser().resolve()
     return [
         TargetSpec(
             target="claude",

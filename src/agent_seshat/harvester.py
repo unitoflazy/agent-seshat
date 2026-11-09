@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from .config import IGNORED_DIRS, Settings, get_settings
+from .config import IGNORED_DIRS, Settings, get_settings, user_home_dir
 from .parser import (
     SKILL_FILENAME,
     extract_keywords,
@@ -145,7 +145,7 @@ def classify(path: Path) -> str | None:
 
 
 def default_roots() -> list[Path]:
-    home = Path.home()
+    home = user_home_dir()
     roots = [Path.cwd()]
     for p in (
         home / ".claude" / "CLAUDE.md",
