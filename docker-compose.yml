@@ -1,0 +1,27 @@
+services:
+  agent-seshat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-seshat
+    command: ["serve", "--transport", "http", "--host", "0.0.0.0", "--port", "8765"]
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      AGENT_SESHAT_HOME: /data/.agent-seshat
+      FASTEMBED_CACHE_PATH: /opt/fastembed_cache
+    volumes:
+      - ~/.agent-seshat:/data/.agent-seshat
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request, sys; r = urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=2); sys.exit(0 if r.status == 200 else 1)",
+        ]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

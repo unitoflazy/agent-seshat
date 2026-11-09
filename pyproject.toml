@@ -1,0 +1,42 @@
+[project]
+name = "agent-seshat"
+version = "2.0.0"
+description = "Seshat v2.0: Unified MCP Gateway, Deep Rule Sync, Interactive Rule Gatekeeper & Hybrid ONNX + FTS5 Search for Claude, Codex, Cursor, and Copilot."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "agent-seshat contributors" }]
+keywords = ["mcp", "claude", "codex", "cursor", "copilot", "skills", "rag", "fastembed", "sqlite"]
+dependencies = [
+    "mcp>=1.10,<2",
+    "fastembed>=0.4.0",
+    "numpy>=1.26",
+    "typer>=0.12",
+    "rich>=13.7",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    "watchfiles>=0.21",
+    "uvicorn>=0.30",
+    "starlette>=0.37",
+    "tomlkit>=0.12",
+]
+
+[project.scripts]
+agent-seshat = "agent_seshat.cli:app"
+sesh = "agent_seshat.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_seshat"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
